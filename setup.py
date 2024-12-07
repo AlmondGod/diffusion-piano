@@ -45,6 +45,8 @@ core_requirements = [
     "scikit-learn==1.4.2",
     "termcolor",
     "tqdm",
+    "torch",
+    "gym"
 ]
 
 test_requirements = [
