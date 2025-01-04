@@ -1,6 +1,5 @@
 """
-on the piano_with_shadow_hands.PianoWithShadowHands task, this should learn to play the 
-"Eye Water" midi file.
+PPO base class
 """
 
 import numpy as np
@@ -80,7 +79,7 @@ class PPOAgent:
         for _ in range(5):  # Multiple epochs
             # Actor update
             dist = self.actor(states)
-            new_log_probs = dist.log_prob(actions).sum(1)
+            new_log_probs = dist.log_prob(actions).sum(0)
             ratio = torch.exp(new_log_probs - old_log_probs)
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1-self.epsilon, 1+self.epsilon) * advantages
