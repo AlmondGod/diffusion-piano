@@ -27,7 +27,7 @@ def play_video(filename: str):
 
 task = piano_with_shadow_hands.PianoWithShadowHands(
     change_color_on_activation=True,
-    midi=music.load("TwinkleTwinkleRousseau"),
+    midi=music.load("/Users/almondgod/Repositories/robopianist/Attack on Titan OP1 - Guren no Yumiya.mid.mid"),
     trim_silence=True,
     control_timestep=0.05,
     gravity_compensation=True,
@@ -71,9 +71,14 @@ class Policy:
     def reset(self) -> None:
         self._idx = 0
         self._actions = np.load("twinkle_twinkle_actions.npy")
+        # Store the length of actions for bounds checking
+        self._max_steps = len(self._actions)
 
     def __call__(self, timestep: dm_env.TimeStep) -> np.ndarray:
         del timestep  # Unused.
+        # Check if we've reached the end of the actions
+        if self._idx >= self._max_steps:
+            return np.zeros_like(self._actions[0])  # Return zero action at the end
         actions = self._actions[self._idx]
         self._idx += 1
         return actions

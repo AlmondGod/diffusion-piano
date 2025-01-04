@@ -20,7 +20,7 @@ def play_video(filename: str):
     """)
 
 task = self_actuated_piano.SelfActuatedPiano(
-    midi=music.load("TwinkleTwinkleRousseau"),
+    midi=music.load("/Users/almondgod/Repositories/robopianist/Attack on Titan OP1 - Guren no Yumiya.mid.mid"),
     change_color_on_activation=True,
     trim_silence=True,
     control_timestep=0.01,
