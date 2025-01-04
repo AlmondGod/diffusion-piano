@@ -6,3 +6,6 @@ soundfonts/
 build/
 dist/
 pig_single_finger/
+
+midi_files/
+played_songs/
