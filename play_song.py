@@ -20,7 +20,7 @@ def play_video(filename: str):
     """)
 
 task = self_actuated_piano.SelfActuatedPiano(
-    midi=music.load("/Users/almondgod/Repositories/robopianist/Attack on Titan OP1 - Guren no Yumiya.mid.mid"),
+    midi=music.load("/Users/almondgod/Repositories/robopianist/midi_files_cut/Guren no Yumiya Cut 14s.mid"),
     change_color_on_activation=True,
     trim_silence=True,
     control_timestep=0.01,
