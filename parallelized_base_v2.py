@@ -7,9 +7,13 @@ from ppo_base import PPOAgent
 from pathlib import Path
 import json
 import argparse
-from acme import wrappers
-from acme.environments import base
 import dm_env
+
+from acme import environment_loops
+from acme import specs
+from acme import wrappers
+from acme.utils import paths
+from acme.wrappers import base
 
 class PianoEnvFactory:
     """Factory for creating piano environments"""
