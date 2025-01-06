@@ -18,8 +18,8 @@ import argparse
 # then convert the sequence to a midi_file object
 
 midi_sequence = add_fingering_from_annotation_file(
-        "/Users/almondgod/Repositories/robopianist/midi_files_cut/Guren no Yumiya Cut 14s.mid",
-        "/Users/almondgod/Repositories/robopianist/data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
+        "./midi_files_cut/Guren no Yumiya Cut 14s.mid",
+        "./data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
     )
 
 class VectorizedPianoEnv:
