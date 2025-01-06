@@ -11,3 +11,5 @@ midi_files/
 played_songs/
 midi_files_cut/
 *.mp4
+models/
+checkpoints/
