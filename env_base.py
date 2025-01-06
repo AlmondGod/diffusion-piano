@@ -65,7 +65,7 @@ for episode in range(num_episodes):
     
     while not timestep.last():
         
-        # Generate your action here (this is just a random example)
+        # Generate actions here 
         action = np.random.uniform(
             low=action_spec.minimum,
             high=action_spec.maximum,
