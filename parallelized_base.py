@@ -30,7 +30,7 @@ class VectorizedPianoEnv:
             disable_fingering_reward=False,
             disable_forearm_reward=False,
             disable_colorization=False,
-            disable_hand_collisions=False,
+            disable_hand_collisions=False,  # We can enable collisions now
         )
 
         # Create base environment to get model
@@ -43,6 +43,22 @@ class VectorizedPianoEnv:
         
         # Get MuJoCo model and optimize for MJX
         mj_model = base_env.physics.model
+        
+        # Convert cylinders to capsules (supported type)
+        for i in range(mj_model.ngeom):
+            if mj_model.geom_type[i] == mujoco.mjtGeom.mjGEOM_CYLINDER:
+                # Get cylinder properties
+                size = mj_model.geom_size[i].copy()  # [radius, height]
+                pos = mj_model.geom_pos[i].copy()
+                quat = mj_model.geom_quat[i].copy()
+                
+                # Convert to capsule
+                mj_model.geom_type[i] = mujoco.mjtGeom.mjGEOM_CAPSULE
+                # Capsule size: [radius, half-length]
+                mj_model.geom_size[i] = np.array([size[0], size[1]/2])
+                mj_model.geom_pos[i] = pos
+                mj_model.geom_quat[i] = quat
+        
         # Optimize model parameters for MJX
         mj_model.opt.iterations = 5  # Reduce solver iterations
         mj_model.opt.ls_iterations = 2  # Reduce line search iterations
