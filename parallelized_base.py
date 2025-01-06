@@ -45,7 +45,7 @@ class VectorizedPianoEnv:
         # Optimize model parameters for MJX
         mj_model.opt.iterations = 5  # Reduce solver iterations
         mj_model.opt.ls_iterations = 2  # Reduce line search iterations
-        mj_model.opt.jacobian = "dense"  # Better for GPU
+        mj_model.opt.jacobian = 2 # Better for GPU
         mj_model.opt.flag.eulerdamp = 0  # Disable euler damping
         
         # Create MJX model and states
