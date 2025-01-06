@@ -8,10 +8,10 @@ from pathlib import Path
 import json
 import argparse
 import jax
-import mujoco.mjx as mjx
+import mujoco
+from mujoco import mjx  # Updated import
 import os
 from functools import partial
-import mujoco
 
 # Set XLA flags for better GPU performance
 os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=true'
@@ -30,7 +30,7 @@ class VectorizedPianoEnv:
             disable_fingering_reward=False,
             disable_forearm_reward=False,
             disable_colorization=False,
-            disable_hand_collisions=False,  # We can enable collisions now
+            disable_hand_collisions=False,
         )
 
         # Create base environment to get model
@@ -66,13 +66,22 @@ class VectorizedPianoEnv:
         mj_model.opt.iterations = 5  # Reduce solver iterations
         mj_model.opt.ls_iterations = 2  # Reduce line search iterations
         mj_model.opt.jacobian = 2  # Better for GPU (2 = dense)
-        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP  # Disable euler damping
+        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
         
-        # Create MJX model and states
-        self.mjx_model = mjx.put_model(mj_model)
-        self.states = jax.vmap(self.mjx_model.make_state)(
-            jax.random.split(jax.random.PRNGKey(0), num_envs)
-        )
+        # Create MJX model and data
+        try:
+            # Try new MJX API
+            self.mjx_model = mjx.device.from_raw(mj_model)
+            self.states = jax.vmap(mjx.device.make_state)(
+                jax.random.split(jax.random.PRNGKey(0), num_envs),
+                self.mjx_model
+            )
+        except AttributeError:
+            # Fallback to older API
+            self.mjx_model = mjx.put_model(mj_model)
+            self.states = jax.vmap(self.mjx_model.make_state)(
+                jax.random.split(jax.random.PRNGKey(0), num_envs)
+            )
         
         # Store specs
         self.observation_spec = base_env.observation_spec()
