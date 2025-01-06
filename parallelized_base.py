@@ -48,14 +48,17 @@ class VectorizedPianoEnv:
         for i in range(mj_model.ngeom):
             if mj_model.geom_type[i] == mujoco.mjtGeom.mjGEOM_CYLINDER:
                 # Get cylinder properties
-                size = mj_model.geom_size[i].copy()  # [radius, height]
+                size = mj_model.geom_size[i].copy()  # [radius, height, unused]
                 pos = mj_model.geom_pos[i].copy()
                 quat = mj_model.geom_quat[i].copy()
                 
                 # Convert to capsule
                 mj_model.geom_type[i] = mujoco.mjtGeom.mjGEOM_CAPSULE
-                # Capsule size: [radius, half-length]
-                mj_model.geom_size[i] = np.array([size[0], size[1]/2])
+                # Capsule size: [radius, half-length, unused]
+                new_size = np.zeros(3)  # Create 3D array
+                new_size[0] = size[0]   # radius
+                new_size[1] = size[1]/2  # half-length
+                mj_model.geom_size[i] = new_size
                 mj_model.geom_pos[i] = pos
                 mj_model.geom_quat[i] = quat
         
