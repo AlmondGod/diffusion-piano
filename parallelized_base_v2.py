@@ -160,7 +160,7 @@ if __name__ == "__main__":
         timestep = env.reset()
         episode_rewards = np.zeros(args.num_envs)
         
-        while not timestep.last():
+        while not timestep[0].last():
             # Process observations
             states = process_observation(timestep.observation, args.num_envs)
             
