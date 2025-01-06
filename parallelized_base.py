@@ -11,6 +11,7 @@ import jax
 import mujoco.mjx as mjx
 import os
 from functools import partial
+import mujoco
 
 # Set XLA flags for better GPU performance
 os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=true'
@@ -45,8 +46,8 @@ class VectorizedPianoEnv:
         # Optimize model parameters for MJX
         mj_model.opt.iterations = 5  # Reduce solver iterations
         mj_model.opt.ls_iterations = 2  # Reduce line search iterations
-        mj_model.opt.jacobian = 2 # Better for GPU
-        mj_model.opt.flag.eulerdamp = 0  # Disable euler damping
+        mj_model.opt.jacobian = 2  # Better for GPU (2 = dense)
+        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP  # Disable euler damping
         
         # Create MJX model and states
         self.mjx_model = mjx.put_model(mj_model)
