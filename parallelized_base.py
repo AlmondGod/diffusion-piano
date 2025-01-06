@@ -1,11 +1,6 @@
-from IPython.display import HTML
-from base64 import b64encode
 import numpy as np
 from dm_env_wrappers import CanonicalSpecWrapper
-from robopianist.wrappers import PianoSoundVideoWrapper
-from robopianist import music
 from mujoco_utils import composer_utils
-import dm_env
 from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
 import numpy as np
 from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
@@ -72,7 +67,6 @@ class VectorizedPianoEnv:
 
 
 if __name__ == "__main__":
-    # TODO: accept num_envs and num_episodes as a command line arg
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_envs', type=int, default=8)
     parser.add_argument('--num_episodes', type=int, default=100)
