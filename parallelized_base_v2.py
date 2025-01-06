@@ -159,8 +159,10 @@ if __name__ == "__main__":
     for episode in range(args.num_episodes):
         timestep = env.reset()
         episode_rewards = np.zeros(args.num_envs)
+
+        print(f"timestep.keys(): {timestep.keys()}")
         
-        while not timestep[0].last():
+        while not timestep.last():
             # Process observations
             states = process_observation(timestep.observation, args.num_envs)
             
