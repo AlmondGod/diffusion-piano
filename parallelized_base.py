@@ -118,6 +118,12 @@ if __name__ == "__main__":
     parser.add_argument('--num_episodes', type=int, default=100)
     args = parser.parse_args()
 
+    # Load MIDI sequence
+    midi_sequence = add_fingering_from_annotation_file(
+        "./midi_files_cut/Guren no Yumiya Cut 14s.mid",
+        "./data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
+    )
+
     # Create vectorized environment
     num_envs = args.num_envs
     num_episodes = args.num_episodes
