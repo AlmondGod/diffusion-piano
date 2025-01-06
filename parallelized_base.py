@@ -2,68 +2,114 @@ import numpy as np
 from dm_env_wrappers import CanonicalSpecWrapper
 from mujoco_utils import composer_utils
 from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
-import numpy as np
 from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
 from ppo_base import PPOAgent
 from pathlib import Path
 import json
 import argparse
+import jax
+import mujoco.mjx as mjx
+import os
 
-# Instead, load the midi file then add the fingering annotations to it as a sequence,
-# then convert the sequence to a midi_file object
-
-midi_sequence = add_fingering_from_annotation_file(
-        "./midi_files_cut/Guren no Yumiya Cut 14s.mid",
-        "./data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
-    )
+# Set XLA flags for better GPU performance
+os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=true'
 
 class VectorizedPianoEnv:
     def __init__(self, num_envs, midi_sequence):
         self.num_envs = num_envs
         self.envs = []
         
-        for _ in range(num_envs):
-            # Create task
-            task = PianoWithShadowHands(
-                midi=midi_sequence,
-                n_steps_lookahead=1,
-                trim_silence=True,
-                wrong_press_termination=False,
-                initial_buffer_time=0.0,
-                disable_fingering_reward=False,
-                disable_forearm_reward=False,
-                disable_colorization=False,
-                disable_hand_collisions=False,
-            )
-            env = composer_utils.Environment(
-                task=task, 
-                strip_singleton_obs_buffer_dim=True, 
-                recompile_physics=True
-            )
-            env = CanonicalSpecWrapper(env)
-            
-            self.envs.append(env)
-            
+        # Create a single task/environment first
+        task = PianoWithShadowHands(
+            midi=midi_sequence,
+            n_steps_lookahead=1,
+            trim_silence=True,
+            wrong_press_termination=False,
+            initial_buffer_time=0.0,
+            disable_fingering_reward=False,
+            disable_forearm_reward=False,
+            disable_colorization=False,
+            disable_hand_collisions=False,
+        )
+        
+        # Create MJX model from the task
+        self.model = mjx.Device(task.physics.model)
+        
+        # Initialize states for all environments
+        self.states = jax.vmap(self.model.make_state)(jax.random.split(jax.random.PRNGKey(0), num_envs))
+        
+        # Store observation/action specs from base environment
+        base_env = composer_utils.Environment(
+            task=task,
+            strip_singleton_obs_buffer_dim=True,
+            recompile_physics=True
+        )
+        self.base_env = CanonicalSpecWrapper(base_env)
+        self.observation_spec = self.base_env.observation_spec()
+        self.action_spec = self.base_env.action_spec()
+        
+    @jax.jit
+    def step_batch(self, states, actions):
+        """Perform one physics step for all environments in parallel"""
+        next_states = jax.vmap(self.model.step)(states, actions)
+        return next_states
+    
     def reset(self):
         """Reset all environments"""
-        observations = [env.reset().observation for env in self.envs]
-        return self._stack_obs(observations)
+        # Reset states using MJX
+        self.states = jax.vmap(self.model.make_state)(jax.random.split(jax.random.PRNGKey(0), self.num_envs))
+        
+        # Get observations from states
+        observations = self._get_observations(self.states)
+        return observations
     
     def step(self, actions):
         """Step all environments in parallel"""
-        results = [env.step(action) for env, action in zip(self.envs, actions)]
-        next_obs = [timestep.observation for timestep in results]
-        rewards = [timestep.reward for timestep in results]
-        dones = [timestep.last() for timestep in results]
+        # Convert actions to device array
+        actions = jax.device_put(actions)
         
-        return self._stack_obs(next_obs), np.array(rewards), np.array(dones)
+        # Step physics in parallel
+        self.states = self.step_batch(self.states, actions)
+        
+        # Get observations and rewards
+        next_obs = self._get_observations(self.states)
+        rewards = self._compute_rewards(self.states)
+        dones = self._compute_dones(self.states)
+        
+        return next_obs, rewards, dones
     
-    def _stack_obs(self, observations):
-        """Stack observations from all environments"""
-        stacked_obs = {}
-        for key in observations[0].keys():
-            stacked_obs[key] = np.stack([obs[key] for obs in observations])
-        return stacked_obs
+    def _get_observations(self, states):
+        """Extract observations from states for all environments"""
+        # Implementation depends on what observations you need
+        # This is a placeholder - implement based on your needs
+        obs_dict = {}
+        for key in self.observation_spec.keys():
+            # Extract observation for each key from states
+            obs_dict[key] = self._extract_observation(states, key)
+        return obs_dict
+    
+    def _extract_observation(self, states, key):
+        """Extract specific observation from states"""
+        # Implement based on your observation space
+        # This is a placeholder
+        if key == 'goal':
+            return jax.vmap(lambda s: s.qpos[:178])(states)
+        elif key == 'fingering':
+            return jax.vmap(lambda s: s.qpos[178:188])(states)
+        # Add other observation extractions as needed
+        return np.zeros((self.num_envs, self.observation_spec[key].shape[0]))
+    
+    def _compute_rewards(self, states):
+        """Compute rewards for all environments"""
+        # Implement your reward function
+        # This is a placeholder
+        return np.zeros(self.num_envs)
+    
+    def _compute_dones(self, states):
+        """Compute done flags for all environments"""
+        # Implement your termination conditions
+        # This is a placeholder
+        return np.zeros(self.num_envs, dtype=bool)
 
 
 if __name__ == "__main__":
