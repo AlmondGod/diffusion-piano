@@ -10,6 +10,7 @@ import argparse
 import jax
 import mujoco.mjx as mjx
 import os
+from functools import partial
 
 # Set XLA flags for better GPU performance
 os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=true'
@@ -17,7 +18,6 @@ os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=true'
 class VectorizedPianoEnv:
     def __init__(self, num_envs, midi_sequence):
         self.num_envs = num_envs
-        self.envs = []
         
         # Create a single task/environment first
         task = PianoWithShadowHands(
@@ -31,90 +31,151 @@ class VectorizedPianoEnv:
             disable_colorization=False,
             disable_hand_collisions=False,
         )
-        
-        # Create MJX model from the task
-        self.model = mjx.Device(task.physics.model)
-        
-        # Initialize states for all environments
-        self.states = jax.vmap(self.model.make_state)(jax.random.split(jax.random.PRNGKey(0), num_envs))
-        
-        # Store observation/action specs from base environment
+
+        # Create base environment to get model
         base_env = composer_utils.Environment(
             task=task,
             strip_singleton_obs_buffer_dim=True,
             recompile_physics=True
         )
-        self.base_env = CanonicalSpecWrapper(base_env)
-        self.observation_spec = self.base_env.observation_spec()
-        self.action_spec = self.base_env.action_spec()
+        base_env = CanonicalSpecWrapper(base_env)
         
-    @jax.jit
+        # Get MuJoCo model and optimize for MJX
+        mj_model = base_env.physics.model
+        # Optimize model parameters for MJX
+        mj_model.opt.iterations = 5  # Reduce solver iterations
+        mj_model.opt.ls_iterations = 2  # Reduce line search iterations
+        mj_model.opt.jacobian = "dense"  # Better for GPU
+        mj_model.opt.flag.eulerdamp = 0  # Disable euler damping
+        
+        # Create MJX model and states
+        self.mjx_model = mjx.put_model(mj_model)
+        self.states = jax.vmap(self.mjx_model.make_state)(
+            jax.random.split(jax.random.PRNGKey(0), num_envs)
+        )
+        
+        # Store specs
+        self.observation_spec = base_env.observation_spec()
+        self.action_spec = base_env.action_spec()
+        
+    @partial(jax.jit, static_argnums=(0,))
     def step_batch(self, states, actions):
         """Perform one physics step for all environments in parallel"""
-        next_states = jax.vmap(self.model.step)(states, actions)
-        return next_states
-    
+        return jax.vmap(mjx.step)(self.mjx_model, states, actions)
+        
     def reset(self):
         """Reset all environments"""
-        # Reset states using MJX
-        self.states = jax.vmap(self.model.make_state)(jax.random.split(jax.random.PRNGKey(0), self.num_envs))
+        self.states = jax.vmap(self.mjx_model.make_state)(
+            jax.random.split(jax.random.PRNGKey(0), self.num_envs)
+        )
+        return self._get_observations(self.states)
         
-        # Get observations from states
-        observations = self._get_observations(self.states)
-        return observations
-    
     def step(self, actions):
         """Step all environments in parallel"""
-        # Convert actions to device array
         actions = jax.device_put(actions)
-        
-        # Step physics in parallel
         self.states = self.step_batch(self.states, actions)
         
-        # Get observations and rewards
-        next_obs = self._get_observations(self.states)
+        obs = self._get_observations(self.states) 
         rewards = self._compute_rewards(self.states)
         dones = self._compute_dones(self.states)
         
-        return next_obs, rewards, dones
-    
+        return obs, rewards, dones
+
     def _get_observations(self, states):
-        """Extract observations from states for all environments"""
-        # Implementation depends on what observations you need
-        # This is a placeholder - implement based on your needs
+        """Extract observations from states for all environments."""
         obs_dict = {}
-        for key in self.observation_spec.keys():
-            # Extract observation for each key from states
-            obs_dict[key] = self._extract_observation(states, key)
+        
+        # Get qpos and qvel from states
+        qpos = states.qpos  # Shape: (num_envs, nq)
+        qvel = states.qvel  # Shape: (num_envs, nv)
+        
+        # Extract observations based on the original environment structure
+        obs_dict['goal'] = qpos[:, :178]  # First 178 elements are goal positions
+        obs_dict['fingering'] = qpos[:, 178:188]  # Next 10 elements are fingering
+        obs_dict['piano/state'] = qpos[:, 188:276]  # 88 piano key states
+        obs_dict['piano/sustain_state'] = qpos[:, 276:277]  # Sustain pedal state
+        obs_dict['rh_shadow_hand/joints_pos'] = qpos[:, 277:303]  # Right hand joint positions
+        obs_dict['lh_shadow_hand/joints_pos'] = qpos[:, 303:]  # Left hand joint positions
+        
         return obs_dict
-    
-    def _extract_observation(self, states, key):
-        """Extract specific observation from states"""
-        # Implement based on your observation space
-        # This is a placeholder
-        if key == 'goal':
-            return jax.vmap(lambda s: s.qpos[:178])(states)
-        elif key == 'fingering':
-            return jax.vmap(lambda s: s.qpos[178:188])(states)
-        # Add other observation extractions as needed
-        return np.zeros((self.num_envs, self.observation_spec[key].shape[0]))
-    
+
     def _compute_rewards(self, states):
-        """Compute rewards for all environments"""
-        # Implement your reward function
-        # This is a placeholder
-        return np.zeros(self.num_envs)
-    
+        """Compute rewards for all environments."""
+        # Get relevant state information
+        qpos = states.qpos
+        qvel = states.qvel
+        
+        # Extract piano key states and goal states
+        piano_states = qpos[:, 188:276]  # 88 piano key states
+        goal_states = qpos[:, :178]  # Goal positions
+        
+        # Compute key press accuracy
+        key_accuracy = jax.numpy.sum(
+            jax.numpy.abs(piano_states - goal_states[:, :88]), axis=1
+        )
+        
+        # Compute velocity penalty to encourage smooth movements
+        velocity_penalty = 0.1 * jax.numpy.sum(jax.numpy.square(qvel), axis=1)
+        
+        # Compute fingering reward
+        fingering_states = qpos[:, 178:188]
+        fingering_reward = 0.5 * jax.numpy.sum(
+            jax.numpy.square(fingering_states), axis=1
+        )
+        
+        # Combine rewards
+        rewards = -key_accuracy - velocity_penalty + fingering_reward
+        
+        return rewards
+
     def _compute_dones(self, states):
-        """Compute done flags for all environments"""
-        # Implement your termination conditions
-        # This is a placeholder
-        return np.zeros(self.num_envs, dtype=bool)
+        """Compute done flags for all environments."""
+        qpos = states.qpos
+        
+        # Get piano key states and goal states
+        piano_states = qpos[:, 188:276]
+        goal_states = qpos[:, :178]
+        
+        # Episode is done if:
+        # 1. Keys are significantly misaligned with goals
+        key_error = jax.numpy.sum(
+            jax.numpy.abs(piano_states - goal_states[:, :88]), axis=1
+        )
+        key_failure = key_error > 10.0
+        
+        # 2. Hands are in invalid positions (e.g., too far from piano)
+        hand_positions = qpos[:, 277:]  # Both hands' joint positions
+        hand_invalid = jax.numpy.any(
+            jax.numpy.abs(hand_positions) > 2.0, axis=1
+        )
+        
+        # Combine termination conditions
+        dones = key_failure | hand_invalid
+        
+        return dones
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _extract_observation(self, states, key):
+        """Extract specific observation from states."""
+        if key == 'goal':
+            return states.qpos[:, :178]
+        elif key == 'fingering':
+            return states.qpos[:, 178:188]
+        elif key == 'piano/state':
+            return states.qpos[:, 188:276]
+        elif key == 'piano/sustain_state':
+            return states.qpos[:, 276:277]
+        elif key == 'rh_shadow_hand/joints_pos':
+            return states.qpos[:, 277:303]
+        elif key == 'lh_shadow_hand/joints_pos':
+            return states.qpos[:, 303:]
+        else:
+            raise KeyError(f"Unknown observation key: {key}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_envs', type=int, default=8)
+    parser.add_argument('--num_envs', type=int, default=8192)
     parser.add_argument('--num_episodes', type=int, default=100)
     args = parser.parse_args()
 
@@ -129,23 +190,20 @@ if __name__ == "__main__":
     num_episodes = args.num_episodes
     vec_env = VectorizedPianoEnv(num_envs, midi_sequence)
 
-    # Get dimensions from first environment
-    observation_spec = vec_env.envs[0].observation_spec()
-    action_spec = vec_env.envs[0].action_spec()
+    # Get dimensions from observation and action specs
+    state_dim = sum(np.prod(spec.shape) for spec in vec_env.observation_spec.values())
+    action_dim = vec_env.action_spec.shape[0]
 
-    state_dim = sum(np.prod(spec.shape) for spec in observation_spec.values())
-    action_dim = action_spec.shape[0]
+    print(f"State dimension: {state_dim}")
+    print(f"Action dimension: {action_dim}")
 
-    print(f"State dimension: {state_dim}")  # Debug print
-    print(f"Action dimension: {action_dim}")  # Debug print
-
-    # Add these parameters
+    # Setup training
     checkpoint_dir = 'checkpoints'
-    checkpoint_frequency = 10  # Save checkpoint every N episodes
+    checkpoint_frequency = 10
     model_dir = 'models'
     Path(model_dir).mkdir(parents=True, exist_ok=True)
 
-    # Initialize the agent with checkpoint directory
+    # Initialize agent
     agent = PPOAgent(
         state_dim=state_dim,
         action_dim=action_dim,
@@ -156,51 +214,47 @@ if __name__ == "__main__":
         checkpoint_dir=checkpoint_dir
     )
 
-    # Training history
     history = {
         'episode_rewards': [],
         'mean_rewards': []
     }
 
     # Training loop
+    @jax.jit
+    def process_observations(obs):
+        """Process observations using JAX operations."""
+        return jax.numpy.stack([
+            jax.numpy.concatenate([
+                obs['goal'][i].flatten(),
+                obs['fingering'][i].flatten(),
+                obs['piano/state'][i].flatten(),
+                obs['piano/sustain_state'][i].flatten(),
+                obs['rh_shadow_hand/joints_pos'][i].flatten(),
+                obs['lh_shadow_hand/joints_pos'][i].flatten()
+            ]) for i in range(num_envs)
+        ])
+
     for episode in range(num_episodes):
         obs = vec_env.reset()
-        episode_rewards = np.zeros(num_envs)
+        episode_rewards = jax.numpy.zeros(num_envs)
         
         while True:
-            # Stack and flatten observations from all environments
-            states = np.stack([
-                np.concatenate([
-                    obs['goal'][i].flatten(),
-                    obs['fingering'][i].flatten(),
-                    obs['piano/state'][i].flatten(),
-                    obs['piano/sustain_state'][i].flatten(),
-                    obs['rh_shadow_hand/joints_pos'][i].flatten(),
-                    obs['lh_shadow_hand/joints_pos'][i].flatten()
-                ]) for i in range(num_envs)
-            ])
+            # Process observations using JAX
+            states = process_observations(obs)
             
-            # Get actions for all environments
+            # Get actions
             actions, log_probs = agent.select_actions(states)
             
-            # Step all environments
+            # Step environments
             next_obs, rewards, dones = vec_env.step(actions)
             
-            # Flatten next_states the same way as states
-            next_states = np.stack([
-                np.concatenate([
-                    next_obs['goal'][i].flatten(),
-                    next_obs['fingering'][i].flatten(),
-                    next_obs['piano/state'][i].flatten(),
-                    next_obs['piano/sustain_state'][i].flatten(),
-                    next_obs['rh_shadow_hand/joints_pos'][i].flatten(),
-                    next_obs['lh_shadow_hand/joints_pos'][i].flatten()
-                ]) for i in range(num_envs)
-            ])
+            # Process next observations
+            next_states = process_observations(next_obs)
             
+            # Update rewards
             episode_rewards += rewards
             
-            # Update agent with batch of experiences
+            # Update agent
             agent.update(
                 states=states,
                 actions=actions,
@@ -209,27 +263,27 @@ if __name__ == "__main__":
                 next_states=next_states
             )
             
-            if all(dones):
+            if jax.numpy.all(dones):
                 break
                 
             obs = next_obs
         
-        mean_reward = episode_rewards.mean()
+        # Convert to numpy for logging
+        mean_reward = float(episode_rewards.mean())
         print(f"Episode {episode}, Mean Reward: {mean_reward}")
         
         # Save history
-        history['episode_rewards'].append(episode_rewards.tolist())
+        history['episode_rewards'].append(jax.device_get(episode_rewards).tolist())
         history['mean_rewards'].append(mean_reward)
         
-        # Save checkpoint periodically
+        # Save checkpoint
         if episode > 0 and episode % checkpoint_frequency == 0:
             agent.save_checkpoint(episode, history)
 
-    # Save final model and training history
+    # Save final model and history
     final_model_path = Path(model_dir) / 'final_model.pt'
     agent.save_model(final_model_path)
 
-    # Save training history
     history_path = Path(model_dir) / 'training_history.json'
     with open(history_path, 'w') as f:
         json.dump(history, f)
