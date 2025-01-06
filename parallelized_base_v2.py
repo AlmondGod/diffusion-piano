@@ -8,12 +8,9 @@ from pathlib import Path
 import json
 import argparse
 import dm_env
-
-from acme import environment_loops
-from acme import specs
 from acme import wrappers
-from acme.utils import paths
 from acme.wrappers import base
+import threading
 
 class PianoEnvFactory:
     """Factory for creating piano environments"""
@@ -39,15 +36,62 @@ class PianoEnvFactory:
         )
         return CanonicalSpecWrapper(env)
 
-def create_parallel_envs(num_envs: int, midi_sequence) -> base.EnvironmentWrapper:
-    """Create parallel environment wrapper"""
-    env_factory = PianoEnvFactory(midi_sequence)
-    return wrappers.ParallelEnvironmentWrapper(
-        env_factory,
-        num_parallel_environments=num_envs,
-        batch_size=num_envs,
-        start_method='spawn'  # Important for CUDA support
-    )
+class ParallelPianoEnv(base.EnvironmentWrapper):
+    """Runs multiple environments in parallel using threading."""
+    def __init__(self, factory: PianoEnvFactory, num_envs: int):
+        self.envs = []
+        self.threads = []
+        self.num_envs = num_envs
+        
+        # Create environments
+        for _ in range(num_envs):
+            env = factory.make_env()
+            self.envs.append(env)
+        
+    def reset(self):
+        """Reset all environments in parallel"""
+        def reset_env(env, results, idx):
+            results[idx] = env.reset().observation
+            
+        results = [None] * self.num_envs
+        threads = []
+        
+        for i, env in enumerate(self.envs):
+            thread = threading.Thread(target=reset_env, args=(env, results, i))
+            thread.start()
+            threads.append(thread)
+            
+        for thread in threads:
+            thread.join()
+            
+        return self._stack_obs(results)
+    
+    def step(self, actions):
+        """Step all environments in parallel"""
+        def step_env(env, action, results, idx):
+            timestep = env.step(action)
+            results[idx] = (timestep.observation, timestep.reward, timestep.last())
+            
+        results = [None] * self.num_envs
+        threads = []
+        
+        for i, (env, action) in enumerate(zip(self.envs, actions)):
+            thread = threading.Thread(target=step_env, args=(env, action, results, i))
+            thread.start()
+            threads.append(thread)
+            
+        for thread in threads:
+            thread.join()
+            
+        next_obs, rewards, dones = zip(*results)
+        return self._stack_obs(next_obs), np.array(rewards), np.array(dones)
+        
+    def _stack_obs(self, observations):
+        """Stack observations from all environments"""
+        stacked_obs = {}
+        for key in observations[0].keys():
+            stacked_obs[key] = np.stack([obs[key] for obs in observations])
+        return stacked_obs
 
 def process_observation(obs, num_envs):
     """Process and flatten observation dictionary"""
@@ -63,7 +107,6 @@ def process_observation(obs, num_envs):
     ])
 
 if __name__ == "__main__":
-    # Parse arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_envs', type=int, default=8)
     parser.add_argument('--num_episodes', type=int, default=100)
@@ -75,16 +118,17 @@ if __name__ == "__main__":
         "./data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
     )
 
-    # Create parallel environment
-    env = create_parallel_envs(args.num_envs, midi_sequence)
+    # Create factory and parallel environment
+    factory = PianoEnvFactory(midi_sequence)
+    env = ParallelPianoEnv(factory, args.num_envs)
 
-    # Get specs from environment
-    observation_spec = env.observation_spec()
-    action_spec = env.action_spec()
-
+    # Rest of your original training code remains the same
+    observation_spec = env.envs[0].observation_spec()
+    action_spec = env.envs[0].action_spec()
+    
     state_dim = sum(np.prod(spec.shape) for spec in observation_spec.values())
     action_dim = action_spec.shape[0]
-
+    
     print(f"State dimension: {state_dim}")
     print(f"Action dimension: {action_dim}")
 
