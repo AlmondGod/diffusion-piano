@@ -45,7 +45,7 @@ class ParallelPianoEnv(base.EnvironmentWrapper):
         
         # Create environments
         for _ in range(num_envs):
-            env = factory.make_env()
+            env = factory()
             self.envs.append(env)
         
     def reset(self):
