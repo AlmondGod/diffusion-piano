@@ -51,7 +51,7 @@ class ParallelPianoEnv(base.EnvironmentWrapper):
     def reset(self):
         """Reset all environments in parallel"""
         def reset_env(env, results, idx):
-            results[idx] = env.reset().observation
+            results[idx] = env.reset()
             
         results = [None] * self.num_envs
         threads = []
@@ -159,8 +159,6 @@ if __name__ == "__main__":
     for episode in range(args.num_episodes):
         timestep = env.reset()
         episode_rewards = np.zeros(args.num_envs)
-
-        print(f"timestep.keys(): {timestep.keys()}")
         
         while not timestep.last():
             # Process observations
