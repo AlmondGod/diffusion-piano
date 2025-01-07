@@ -12,3 +12,4 @@ played_songs/
 *.mp4
 models/
 checkpoints/
+wandb/

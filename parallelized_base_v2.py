@@ -2,90 +2,63 @@ import numpy as np
 from dm_env_wrappers import CanonicalSpecWrapper
 from mujoco_utils import composer_utils
 from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
+import numpy as np
 from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
-from ppo_base import PPOAgent
+from ppo_v2 import PPOAgent
 from pathlib import Path
 import json
 import argparse
-import dm_env
-from acme import wrappers
-from acme.wrappers import base
-import threading
+import time
 
-class PianoEnvFactory:
-    """Factory for creating piano environments"""
-    def __init__(self, midi_sequence):
-        self.midi_sequence = midi_sequence
-    
-    def __call__(self) -> dm_env.Environment:
-        task = PianoWithShadowHands(
-            midi=self.midi_sequence,
-            n_steps_lookahead=1,
-            trim_silence=True,
-            wrong_press_termination=False,
-            initial_buffer_time=0.0,
-            disable_fingering_reward=False,
-            disable_forearm_reward=False,
-            disable_colorization=False,
-            disable_hand_collisions=False,
-        )
-        env = composer_utils.Environment(
-            task=task, 
-            strip_singleton_obs_buffer_dim=True, 
-            recompile_physics=True
-        )
-        return CanonicalSpecWrapper(env)
+# Instead, load the midi file then add the fingering annotations to it as a sequence,
+# then convert the sequence to a midi_file object
 
-class ParallelPianoEnv(base.EnvironmentWrapper):
-    """Runs multiple environments in parallel using threading."""
-    def __init__(self, factory: PianoEnvFactory, num_envs: int):
-        self.envs = []
-        self.threads = []
+midi_sequence = add_fingering_from_annotation_file(
+        "/Users/almondgod/Repositories/robopianist/midi_files_cut/Guren no Yumiya Cut 14s.mid",
+        "/Users/almondgod/Repositories/robopianist/data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
+    )
+
+class VectorizedPianoEnv:
+    def __init__(self, num_envs, midi_sequence):
         self.num_envs = num_envs
+        self.envs = []
         
-        # Create environments
         for _ in range(num_envs):
-            env = factory()
+            # Create task
+            task = PianoWithShadowHands(
+                midi=midi_sequence,
+                n_steps_lookahead=1,
+                trim_silence=True,
+                wrong_press_termination=False,
+                initial_buffer_time=0.0,
+                disable_fingering_reward=False,
+                disable_forearm_reward=False,
+                disable_colorization=False,
+                disable_hand_collisions=False,
+            )
+            env = composer_utils.Environment(
+                task=task, 
+                strip_singleton_obs_buffer_dim=True, 
+                recompile_physics=True
+            )
+            env = CanonicalSpecWrapper(env)
+            
             self.envs.append(env)
-        
+            
     def reset(self):
-        """Reset all environments in parallel"""
-        def reset_env(env, results, idx):
-            results[idx] = env.reset()
-            
-        results = [None] * self.num_envs
-        threads = []
-        
-        for i, env in enumerate(self.envs):
-            thread = threading.Thread(target=reset_env, args=(env, results, i))
-            thread.start()
-            threads.append(thread)
-            
-        for thread in threads:
-            thread.join()
-            
-        return self._stack_obs(results)
+        """Reset all environments"""
+        observations = [env.reset().observation for env in self.envs]
+        return self._stack_obs(observations)
     
     def step(self, actions):
         """Step all environments in parallel"""
-        def step_env(env, action, results, idx):
-            timestep = env.step(action)
-            results[idx] = (timestep.observation, timestep.reward, timestep.last())
-            
-        results = [None] * self.num_envs
-        threads = []
+        results = [env.step(action) for env, action in zip(self.envs, actions)]
+        next_obs = [timestep.observation for timestep in results]
+        rewards = [timestep.reward for timestep in results]
+        dones = [timestep.last() for timestep in results]
         
-        for i, (env, action) in enumerate(zip(self.envs, actions)):
-            thread = threading.Thread(target=step_env, args=(env, action, results, i))
-            thread.start()
-            threads.append(thread)
-            
-        for thread in threads:
-            thread.join()
-            
-        next_obs, rewards, dones = zip(*results)
         return self._stack_obs(next_obs), np.array(rewards), np.array(dones)
-        
+    
     def _stack_obs(self, observations):
         """Stack observations from all environments"""
         stacked_obs = {}
@@ -93,58 +66,42 @@ class ParallelPianoEnv(base.EnvironmentWrapper):
             stacked_obs[key] = np.stack([obs[key] for obs in observations])
         return stacked_obs
 
-def process_observation(obs, num_envs):
-    """Process and flatten observation dictionary"""
-    return np.stack([
-        np.concatenate([
-            obs['goal'][i].flatten(),
-            obs['fingering'][i].flatten(),
-            obs['piano/state'][i].flatten(),
-            obs['piano/sustain_state'][i].flatten(),
-            obs['rh_shadow_hand/joints_pos'][i].flatten(),
-            obs['lh_shadow_hand/joints_pos'][i].flatten()
-        ]) for i in range(num_envs)
-    ])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_envs', type=int, default=8)
-    parser.add_argument('--num_episodes', type=int, default=100)
+    parser.add_argument('--num_envs', type=int, default=2)
+    parser.add_argument('--num_episodes', type=int, default=20000)
     args = parser.parse_args()
 
-    # Load MIDI sequence
-    midi_sequence = add_fingering_from_annotation_file(
-        "./midi_files_cut/Guren no Yumiya Cut 14s.mid",
-        "./data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
-    )
+    # Create vectorized environment
+    num_envs = args.num_envs
+    num_episodes = args.num_episodes
+    vec_env = VectorizedPianoEnv(num_envs, midi_sequence)
 
-    # Create factory and parallel environment
-    factory = PianoEnvFactory(midi_sequence)
-    env = ParallelPianoEnv(factory, args.num_envs)
+    # Get dimensions from first environment
+    observation_spec = vec_env.envs[0].observation_spec()
+    action_spec = vec_env.envs[0].action_spec()
 
-    # Rest of your original training code remains the same
-    observation_spec = env.envs[0].observation_spec()
-    action_spec = env.envs[0].action_spec()
-    
     state_dim = sum(np.prod(spec.shape) for spec in observation_spec.values())
     action_dim = action_spec.shape[0]
-    
-    print(f"State dimension: {state_dim}")
-    print(f"Action dimension: {action_dim}")
 
-    # Setup directories
-    checkpoint_dir = 'checkpoints'
-    checkpoint_frequency = 10
-    model_dir = 'models'
+    print(f"State dimension: {state_dim}")  # Debug print
+    print(f"Action dimension: {action_dim}")  # Debug print
+
+    # Add these parameters
+    checkpoint_dir = f'checkpoints/{time.strftime("%Y%m%d_%H%M%S")}'
+    checkpoint_frequency = 1000  # Save checkpoint every N episodes
+    model_dir = f'models/{time.strftime("%Y%m%d_%H%M%S")}'
     Path(model_dir).mkdir(parents=True, exist_ok=True)
 
-    # Initialize agent
+    # Initialize the agent with checkpoint directory
     agent = PPOAgent(
         state_dim=state_dim,
         action_dim=action_dim,
-        lr=3e-4,
+        lr=1e-4,
         gamma=0.99,
         epsilon=0.2,
+        batch_size=128,
         device='cuda',
         checkpoint_dir=checkpoint_dir
     )
@@ -156,36 +113,58 @@ if __name__ == "__main__":
     }
 
     # Training loop
-    for episode in range(args.num_episodes):
-        timestep = env.reset()
-        episode_rewards = np.zeros(args.num_envs)
+    for episode in range(num_episodes):
+        obs = vec_env.reset()
+        episode_rewards = np.zeros(num_envs)
         
-        while not timestep.last():
-            # Process observations
-            states = process_observation(timestep.observation, args.num_envs)
+        while True:
+            # Stack and flatten observations from all environments
+            states = np.stack([
+                np.concatenate([
+                    obs['goal'][i].flatten(),
+                    obs['fingering'][i].flatten(),
+                    obs['piano/state'][i].flatten(),
+                    obs['piano/sustain_state'][i].flatten(),
+                    obs['rh_shadow_hand/joints_pos'][i].flatten(),
+                    obs['lh_shadow_hand/joints_pos'][i].flatten()
+                ]) for i in range(num_envs)
+            ])
             
-            # Get actions
+            # Get actions for all environments
             actions, log_probs = agent.select_actions(states)
             
-            # Step environment
-            timestep = env.step(actions)
+            # Step all environments
+            next_obs, rewards, dones = vec_env.step(actions)
             
-            # Process next states
-            next_states = process_observation(timestep.observation, args.num_envs)
+            # Flatten next_states the same way as states
+            next_states = np.stack([
+                np.concatenate([
+                    next_obs['goal'][i].flatten(),
+                    next_obs['fingering'][i].flatten(),
+                    next_obs['piano/state'][i].flatten(),
+                    next_obs['piano/sustain_state'][i].flatten(),
+                    next_obs['rh_shadow_hand/joints_pos'][i].flatten(),
+                    next_obs['lh_shadow_hand/joints_pos'][i].flatten()
+                ]) for i in range(num_envs)
+            ])
             
-            # Update rewards
-            episode_rewards += timestep.reward
+            episode_rewards += rewards
             
-            # Update agent
+            # Update agent with batch of experiences
             agent.update(
                 states=states,
                 actions=actions,
-                rewards=timestep.reward,
+                rewards=rewards,
                 log_probs=log_probs,
-                next_states=next_states
+                next_states=next_states,
+                dones=dones
             )
+            
+            if all(dones):
+                break
+                
+            obs = next_obs
         
-        # Process episode results
         mean_reward = episode_rewards.mean()
         print(f"Episode {episode}, Mean Reward: {mean_reward}")
         
@@ -193,15 +172,16 @@ if __name__ == "__main__":
         history['episode_rewards'].append(episode_rewards.tolist())
         history['mean_rewards'].append(mean_reward)
         
-        # Save checkpoint
+        # Save checkpoint periodically
         if episode > 0 and episode % checkpoint_frequency == 0:
             agent.save_checkpoint(episode, history)
 
-    # Save final results
-    final_model_path = Path(model_dir) / 'final_model.pt'
+    # Save final model and training history demarked by time
+    final_model_path = Path(model_dir) / f'final_model_{time.strftime("%Y%m%d_%H%M%S")}.pt'
     agent.save_model(final_model_path)
 
-    history_path = Path(model_dir) / 'training_history.json'
+    # Save training history
+    history_path = Path(model_dir) / f'training_history_{time.strftime("%Y%m%d_%H%M%S")}.json'
     with open(history_path, 'w') as f:
         json.dump(history, f)
 

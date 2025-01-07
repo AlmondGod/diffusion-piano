@@ -61,7 +61,7 @@ def add_fingering_from_annotation_file(
                         midi_number,
                         finger_value 
                     ))
-                    print(f"Added fingering {finger_value} for note {pitch} at {start}")
+                    # print(f"Added fingering {finger_value} for note {pitch} at {start}")
     
     sequence = midi_io.midi_file_to_note_sequence(str(input_midi))
     
