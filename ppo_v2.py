@@ -135,11 +135,13 @@ class PPOAgent:
         self, 
         state_dim, 
         action_dim, 
-        lr=1e-4,
+        lr=3e-4,  # Increased from 1e-4
         gamma=0.99,
         epsilon=0.2,
-        entropy_coef=0.01,
-        value_coef=1.0,
+        initial_entropy_coef=0.1,  # Increased from 0.01
+        min_entropy_coef=0.01,
+        entropy_decay_steps=1000000,
+        value_coef=0.5,  # Reduced from 1.0
         max_grad_norm=0.5,
         ppo_epochs=10,
         batch_size=64,
@@ -151,7 +153,12 @@ class PPOAgent:
         self.actor = Actor(state_dim, action_dim).to(self.device)
         self.critic = Critic(state_dim).to(self.device)
         
-        # Reduced learning rates and added beta parameters for Adam
+        # Warmup learning rate scheduler
+        self.warmup_steps = 1000
+        self.current_step = 0
+        self.base_lr = lr
+        
+        # Base optimizers
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(), 
             lr=lr,
@@ -160,34 +167,39 @@ class PPOAgent:
         )
         self.critic_optimizer = optim.Adam(
             self.critic.parameters(), 
-            lr=lr*2,  # Reduced multiplier from 3 to 2
+            lr=lr,
             betas=(0.9, 0.999),
             eps=1e-5
         )
         
-        # More gradual learning rate decay
+        # More aggressive learning rate decay
         self.actor_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.actor_optimizer,
             mode='max',
             factor=0.5,
-            patience=100,
-            verbose=True
+            patience=50,  # Reduced from 100
+            verbose=True,
+            min_lr=1e-5
         )
         self.critic_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.critic_optimizer,
             mode='min',
             factor=0.5,
-            patience=100,
-            verbose=True
+            patience=50,  # Reduced from 100
+            verbose=True,
+            min_lr=1e-5
         )
         
-        # Add reward normalization
-        self.reward_normalizer = RunningMeanStd()
+        # Entropy coefficient decay
+        self.initial_entropy_coef = initial_entropy_coef
+        self.min_entropy_coef = min_entropy_coef
+        self.entropy_decay_steps = entropy_decay_steps
+        self.entropy_coef = initial_entropy_coef
         
+        # Other parameters
         self.max_grad_norm = max_grad_norm
         self.gamma = gamma
         self.epsilon = epsilon
-        self.entropy_coef = entropy_coef
         self.value_coef = value_coef
         self.ppo_epochs = ppo_epochs
         self.batch_size = batch_size
@@ -196,17 +208,27 @@ class PPOAgent:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
+        # Add reward normalization with clipping
+        self.reward_normalizer = RunningMeanStd()
+        self.value_normalizer = RunningMeanStd()  # Added value normalization
+        
         self.use_wandb = use_wandb
         if use_wandb:
-            wandb.init(project="robopianist-ppo", config={
-                "lr": lr,
-                "gamma": gamma,
-                "epsilon": epsilon,
-                "entropy_coef": entropy_coef,
-                "value_coef": value_coef,
-                "ppo_epochs": ppo_epochs,
-                "batch_size": batch_size
-            })
+            wandb.init(project="robopianist-ppo", config=self.__dict__)
+
+    def _update_entropy_coef(self):
+        """Decay entropy coefficient over time"""
+        self.current_step += 1
+        self.entropy_coef = max(
+            self.min_entropy_coef,
+            self.initial_entropy_coef * (1 - self.current_step / self.entropy_decay_steps)
+        )
+    
+    def _get_warmup_lr(self):
+        """Implement linear warmup"""
+        if self.current_step < self.warmup_steps:
+            return self.base_lr * (self.current_step / self.warmup_steps)
+        return self.base_lr
 
     def select_actions(self, states):
         """Handle batch of states with exploration noise"""
@@ -218,15 +240,26 @@ class PPOAgent:
         return actions.cpu().numpy(), log_probs.cpu().numpy()
 
     def update(self, states, actions, rewards, log_probs, next_states, dones):
-        # Normalize rewards
+        # Update entropy coefficient and learning rate
+        self._update_entropy_coef()
+        current_lr = self._get_warmup_lr()
+        
+        # Update learning rates during warmup
+        if self.current_step < self.warmup_steps:
+            for param_group in self.actor_optimizer.param_groups:
+                param_group['lr'] = current_lr
+            for param_group in self.critic_optimizer.param_groups:
+                param_group['lr'] = current_lr
+        
+        # Normalize and clip rewards
         rewards = torch.FloatTensor(self.reward_normalizer(rewards)).to(self.device)
+        rewards = torch.clamp(rewards, -10, 10)
         
         # Convert to tensors and move to device
         states = torch.FloatTensor(states).to(self.device)
         actions = torch.FloatTensor(actions).to(self.device)
         old_log_probs = torch.FloatTensor(log_probs).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
         dones = torch.FloatTensor(dones).to(self.device)
 
         # Compute returns and advantages
@@ -234,10 +267,11 @@ class PPOAgent:
             values = self.critic(states).squeeze(-1)
             next_values = self.critic(next_states).squeeze(-1)
             
-            # Calculate returns using TD(λ)
-            returns = torch.zeros_like(rewards)
-            future_returns = next_values * (1 - dones)  # Zero out future values for terminal states
-            returns = rewards + self.gamma * future_returns
+            # Normalize values
+            values = self.value_normalizer(values.cpu().numpy())
+            next_values = self.value_normalizer(next_values.cpu().numpy())
+            values = torch.FloatTensor(values).to(self.device)
+            next_values = torch.FloatTensor(next_values).to(self.device)
             
             # GAE Advantage calculation
             advantages = torch.zeros_like(rewards)
@@ -251,11 +285,17 @@ class PPOAgent:
                 delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
                 gae = delta + self.gamma * 0.95 * (1 - dones[t]) * gae
                 advantages[t] = gae
+            
+            returns = advantages + values
 
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # PPO update
+        total_actor_loss = 0
+        total_critic_loss = 0
+        total_entropy = 0
+        
         for _ in range(self.ppo_epochs):
             # Create data loader for mini-batch updates
             dataset = torch.utils.data.TensorDataset(
@@ -276,9 +316,9 @@ class PPOAgent:
                 surr2 = torch.clamp(ratio, 1-self.epsilon, 1+self.epsilon) * b_advantages
                 actor_loss = -torch.min(surr1, surr2).mean() - self.entropy_coef * entropy
                 
-                # Critic loss with larger coefficient
+                # Critic loss
                 value_pred = self.critic(b_states).squeeze(-1)
-                critic_loss = nn.MSELoss()(value_pred, b_returns)
+                critic_loss = self.value_coef * nn.MSELoss()(value_pred, b_returns)
                 
                 # Update critic first
                 self.critic_optimizer.zero_grad()
@@ -292,21 +332,33 @@ class PPOAgent:
                 torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_optimizer.step()
                 
-                if self.use_wandb:
-                    wandb.log({
-                        "actor_loss": actor_loss.item(),
-                        "critic_loss": critic_loss.item(),
-                        "entropy": entropy.item(),
-                        "value_predictions": value_pred.mean().item(),
-                        "returns": b_returns.mean().item(),
-                        "advantages": b_advantages.mean().item()
-                    })
+                total_actor_loss += actor_loss.item()
+                total_critic_loss += critic_loss.item()
+                total_entropy += entropy.item()
+
+        # Calculate averages
+        num_batches = len(loader) * self.ppo_epochs
+        avg_actor_loss = total_actor_loss / num_batches
+        avg_critic_loss = total_critic_loss / num_batches
+        avg_entropy = total_entropy / num_batches
         
-        # Update learning rates based on performance
-        mean_reward = rewards.mean().item()
-        mean_critic_loss = critic_loss.item()
-        self.actor_scheduler.step(mean_reward)
-        self.critic_scheduler.step(mean_critic_loss)
+        # Update learning rate schedulers
+        self.actor_scheduler.step(rewards.mean().item())
+        self.critic_scheduler.step(avg_critic_loss)
+        
+        if self.use_wandb:
+            wandb.log({
+                "actor_loss": avg_actor_loss,
+                "critic_loss": avg_critic_loss,
+                "entropy": avg_entropy,
+                "entropy_coef": self.entropy_coef,
+                "learning_rate": current_lr,
+                "value_predictions": value_pred.mean().item(),
+                "returns": returns.mean().item(),
+                "advantages": advantages.mean().item(),
+                "reward_mean": rewards.mean().item(),
+                "reward_std": rewards.std().item()
+            })
 
     def save_checkpoint(self, episode, rewards):
         checkpoint = {
