@@ -81,8 +81,8 @@ def clip_midi(input_file, output_file, max_seconds):
 # Example usage:
 if __name__ == "__main__":
     # Replace these with your actual file paths
-    input_midi = "/Users/almondgod/Repositories/robopianist/midi_files/Attack on Titan OP1 - Guren no Yumiya.mid.mid"
-    output_midi = "/Users/almondgod/Repositories/robopianist/midi_files_cut/Guren no Yumiya Cut 14s.mid"
-    clip_duration = 21.7  # Clip to 10 seconds
+    input_midi = "/Users/almondgod/Repositories/robopianist/midi_files/Sword Art Online - Crossing Field (SAO OP).mid"
+    output_midi = "/Users/almondgod/Repositories/robopianist/midi_files_cut/Crossing Field Cut 10s.mid"
+    clip_duration = 15  # Clip to 10 seconds
     
     clip_midi(input_midi, output_midi, clip_duration)

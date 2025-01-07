@@ -4,17 +4,18 @@ from mujoco_utils import composer_utils
 from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
 import numpy as np
 from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
-from ppo_base import PPOAgent
+from ppo_v2 import PPOAgent
 from pathlib import Path
 import json
 import argparse
+import time
 
 # Instead, load the midi file then add the fingering annotations to it as a sequence,
 # then convert the sequence to a midi_file object
 
 midi_sequence = add_fingering_from_annotation_file(
-        "./midi_files_cut/Guren no Yumiya Cut 14s.mid",
-        "./data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
+        "/Users/almondgod/Repositories/robopianist/midi_files/Attack on Titan OP1 - Guren no Yumiya.mid.mid",
+        "/Users/almondgod/Repositories/robopianist/data_processing/Guren no Yumiya Cut 14s_fingering v3.txt"
     )
 
 class VectorizedPianoEnv:
@@ -68,8 +69,8 @@ class VectorizedPianoEnv:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_envs', type=int, default=8)
-    parser.add_argument('--num_episodes', type=int, default=100)
+    parser.add_argument('--num_envs', type=int, default=2)
+    parser.add_argument('--num_episodes', type=int, default=4000)
     args = parser.parse_args()
 
     # Create vectorized environment
@@ -88,9 +89,9 @@ if __name__ == "__main__":
     print(f"Action dimension: {action_dim}")  # Debug print
 
     # Add these parameters
-    checkpoint_dir = 'checkpoints'
-    checkpoint_frequency = 10  # Save checkpoint every N episodes
-    model_dir = 'models'
+    checkpoint_dir = f'checkpoints/{time.strftime("%Y%m%d_%H%M%S")}'
+    checkpoint_frequency = 200  # Save checkpoint every N episodes
+    model_dir = f'models/{time.strftime("%Y%m%d_%H%M%S")}'
     Path(model_dir).mkdir(parents=True, exist_ok=True)
 
     # Initialize the agent with checkpoint directory
@@ -173,12 +174,12 @@ if __name__ == "__main__":
         if episode > 0 and episode % checkpoint_frequency == 0:
             agent.save_checkpoint(episode, history)
 
-    # Save final model and training history
-    final_model_path = Path(model_dir) / 'final_model.pt'
+    # Save final model and training history demarked by time
+    final_model_path = Path(model_dir) / f'final_model_{time.strftime("%Y%m%d_%H%M%S")}.pt'
     agent.save_model(final_model_path)
 
     # Save training history
-    history_path = Path(model_dir) / 'training_history.json'
+    history_path = Path(model_dir) / f'training_history_{time.strftime("%Y%m%d_%H%M%S")}.json'
     with open(history_path, 'w') as f:
         json.dump(history, f)
 
