@@ -6,6 +6,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from typing import Dict, Any
 
+import os
 from dm_env_wrappers import CanonicalSpecWrapper
 from mujoco_utils import composer_utils
 from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
@@ -17,6 +18,7 @@ import time
 import torch
 from stable_baselines3.common.callbacks import BaseCallback
 import psutil
+from torch.cuda import amp
 
 def setup_monitoring():
     try:
@@ -73,7 +75,6 @@ class PianoEnvWrapper(gym.Env):
     def __init__(self, midi_sequence):
         super().__init__()
         
-        # Create the base environment
         self.task = PianoWithShadowHands(
             midi=midi_sequence,
             n_steps_lookahead=1,
@@ -82,13 +83,14 @@ class PianoEnvWrapper(gym.Env):
             initial_buffer_time=0.0,
             disable_fingering_reward=False,
             disable_forearm_reward=False,
-            disable_colorization=False,
+            disable_colorization=True,  # Disable colorization
             disable_hand_collisions=False,
         )
         self.env = composer_utils.Environment(
             task=self.task,
             strip_singleton_obs_buffer_dim=True,
-            recompile_physics=True
+            recompile_physics=True,
+            render_mode=None  # Disable rendering
         )
         self.env = CanonicalSpecWrapper(self.env)
         
@@ -150,6 +152,11 @@ def make_env(midi_sequence, rank):
 
 
 if __name__ == "__main__":
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Better error messages
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TF warnings
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_envs', type=int, default=16)
     parser.add_argument('--total_timesteps', type=int, default=2000000)
@@ -192,7 +199,7 @@ if __name__ == "__main__":
         vec_env,
         learning_rate=3e-4,
         n_steps=4096,
-        batch_size=256,
+        batch_size=512,
         n_epochs=10,
         gamma=0.99,
         clip_range=0.2,
@@ -201,17 +208,18 @@ if __name__ == "__main__":
         device='cuda',
         policy_kwargs=dict(
             net_arch=dict(
-                pi=[1024, 1024, 512, 512, 256],
-                vf=[1024, 1024, 512, 512, 256]
+                pi=[1024, 1024, 1024, 512, 512],
+                vf=[1024, 1024, 1024, 512, 512]
             ),
             activation_fn=torch.nn.ReLU,
             normalize_images=False,
         ),
-        tensorboard_log=log_dir
+        tensorboard_log="./piano_tensorboard/"
     )
 
-    # Enable mixed precision training
-    model.policy.to(dtype=torch.float16)
+    # Instead of manually converting to fp16, use torch.cuda.amp
+    model.policy.optimizer = torch.optim.Adam(model.policy.parameters(), lr=3e-4)
+    scaler = amp.GradScaler('cuda')
     
     # Add gradient clipping
     model.policy.optimizer.param_groups[0]['grad_clip_norm'] = 0.5
