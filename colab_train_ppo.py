@@ -15,7 +15,59 @@ import argparse
 import time
 
 import torch
+from stable_baselines3.common.callbacks import BaseCallback
+import psutil
 
+def setup_monitoring():
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        print(f"GPU memory total: {info.total / 1024**2:.2f} MB")
+        print(f"GPU memory used: {info.used / 1024**2:.2f} MB")
+    except:
+        print("Could not initialize GPU monitoring")
+
+    # Enable PyTorch optimizations
+    torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available():
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory allocated: {torch.cuda.memory_allocated(0)/1024**2:.2f} MB")
+    
+    # Print CPU info
+    import multiprocessing
+    print(f"Number of CPU cores: {multiprocessing.cpu_count()}")
+
+class ResourceMonitorCallback(BaseCallback):
+    """
+    Custom callback for monitoring system resources during training.
+    """
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self.training_start = time.time()
+        
+    def _on_step(self) -> bool:
+        if self.n_calls % 1000 == 0:  # Log every 1000 steps
+            # GPU Memory
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated(0)/1024**2
+                reserved = torch.cuda.memory_reserved(0)/1024**2
+                print(f"\nStep {self.n_calls}")
+                print(f"GPU Memory allocated: {allocated:.2f}MB")
+                print(f"GPU Memory reserved: {reserved:.2f}MB")
+            
+            # CPU Usage
+            cpu_percent = psutil.cpu_percent()
+            ram_percent = psutil.virtual_memory().percent
+            print(f"CPU Usage: {cpu_percent}%")
+            print(f"RAM Usage: {ram_percent}%")
+            
+            # Training time
+            elapsed_time = time.time() - self.training_start
+            print(f"Training time: {elapsed_time/3600:.2f} hours")
+            
+        return True
 
 class PianoEnvWrapper(gym.Env):
     def __init__(self, midi_sequence):
@@ -98,14 +150,23 @@ def make_env(midi_sequence, rank):
 
 
 if __name__ == "__main__":
-    import argparse
-    from pathlib import Path
-    import time
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_envs', type=int, default=16)
     parser.add_argument('--total_timesteps', type=int, default=2000000)
+    parser.add_argument('--checkpoint_freq', type=int, default=10000)
+    parser.add_argument('--eval_freq', type=int, default=20000)
     args = parser.parse_args()
+
+    # Setup monitoring
+    setup_monitoring()
+    
+    # Create output directories with timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    base_dir = f'training_runs/{timestamp}'
+    model_dir = f'{base_dir}/models'
+    log_dir = f'{base_dir}/logs'
+    Path(model_dir).mkdir(parents=True, exist_ok=True)
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
 
     midi_sequence = add_fingering_from_annotation_file(
         "./midi_files_cut/Guren no Yumiya Cut 14s.mid",
@@ -113,57 +174,65 @@ if __name__ == "__main__":
     )
 
     # Create vectorized environment
-    env_fns = [make_env(midi_sequence, i) for i in range(args.num_envs)]  # 16 parallel envs
+    env_fns = [make_env(midi_sequence, i) for i in range(args.num_envs)]
     vec_env = SubprocVecEnv(env_fns)
 
-    # Set up model saving
-    model_dir = f'models/{time.strftime("%Y%m%d_%H%M%S")}'
-    Path(model_dir).mkdir(parents=True, exist_ok=True)
-    
     # Create callbacks
     checkpoint_callback = CheckpointCallback(
-        save_freq=10000,
+        save_freq=args.checkpoint_freq,
         save_path=model_dir,
         name_prefix="ppo_piano"
     )
     
-
-    # Initialize PPO with A100-optimized parameters
+    monitor_callback = ResourceMonitorCallback()
+    
+    # Initialize PPO with mixed precision training
     model = PPO(
         "MlpPolicy",
         vec_env,
         learning_rate=3e-4,
-        n_steps=4096,          # Increased steps per update
-        batch_size=256,        # Larger batches
+        n_steps=4096,
+        batch_size=256,
         n_epochs=10,
         gamma=0.99,
         clip_range=0.2,
         ent_coef=0.1,
         verbose=1,
         device='cuda',
-        # A100-specific optimizations
         policy_kwargs=dict(
             net_arch=dict(
-                pi=[1024, 1024, 512, 512, 256],  # Policy network
-                vf=[1024, 1024, 512, 512, 256]  # Value network
+                pi=[1024, 1024, 512, 512, 256],
+                vf=[1024, 1024, 512, 512, 256]
             ),
             activation_fn=torch.nn.ReLU,
             normalize_images=False,
         ),
-        # Tensorboard logging
-        tensorboard_log="./piano_tensorboard/"
+        tensorboard_log=log_dir
     )
 
-    # Add gradient clipping for stability with larger batches
+    # Enable mixed precision training
+    model.policy.to(dtype=torch.float16)
+    
+    # Add gradient clipping
     model.policy.optimizer.param_groups[0]['grad_clip_norm'] = 0.5
 
-    # Train with larger total timesteps
-    model.learn(
-        total_timesteps=args.total_timesteps,  # Increased total timesteps
-        callback=checkpoint_callback,
-    )
-
-    # Save final model
-    final_model_path = f"{model_dir}/final_model"
-    model.save(final_model_path)
-    print(f"Training complete. Model saved to {final_model_path}")
+    try:
+        # Train with callbacks
+        model.learn(
+            total_timesteps=args.total_timesteps,
+            callback=[checkpoint_callback, monitor_callback],
+        )
+        
+        # Save final model
+        final_model_path = f"{model_dir}/final_model"
+        model.save(final_model_path)
+        print(f"Training complete. Model saved to {final_model_path}")
+        
+    except KeyboardInterrupt:
+        print("\nTraining interrupted! Saving current model...")
+        model.save(f"{model_dir}/interrupted_model")
+        print("Model saved. Exiting...")
+    except Exception as e:
+        print(f"\nError during training: {str(e)}")
+        model.save(f"{model_dir}/error_model")
+        raise e
