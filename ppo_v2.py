@@ -135,16 +135,17 @@ class PPOAgent:
         self, 
         state_dim, 
         action_dim, 
-        lr=3e-4,  # Increased from 1e-4
+        lr=3e-4,
         gamma=0.99,
         epsilon=0.2,
-        initial_entropy_coef=0.1,  # Increased from 0.01
+        initial_entropy_coef=0.1,
         min_entropy_coef=0.01,
-        entropy_decay_steps=1000000,
-        value_coef=0.5,  # Reduced from 1.0
+        entropy_decay_steps=10000,
+        value_coef=0.5,
         max_grad_norm=0.5,
         ppo_epochs=10,
         batch_size=64,
+        gae_lambda=0.95,
         device='cuda',
         checkpoint_dir='checkpoints',
         use_wandb=True
@@ -172,12 +173,13 @@ class PPOAgent:
             eps=1e-5
         )
         
-        # More aggressive learning rate decay
+        # More sensitive learning rate scheduling
         self.actor_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.actor_optimizer,
             mode='max',
             factor=0.5,
-            patience=50,  # Reduced from 100
+            patience=20,
+            threshold=1e-2,
             verbose=True,
             min_lr=1e-5
         )
@@ -203,6 +205,7 @@ class PPOAgent:
         self.value_coef = value_coef
         self.ppo_epochs = ppo_epochs
         self.batch_size = batch_size
+        self.gae_lambda = gae_lambda
         
         self.rollout_buffer = RolloutBuffer(batch_size)
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -251,9 +254,9 @@ class PPOAgent:
             for param_group in self.critic_optimizer.param_groups:
                 param_group['lr'] = current_lr
         
-        # Normalize and clip rewards
+        # Normalize and clip rewards more conservatively
         rewards = torch.FloatTensor(self.reward_normalizer(rewards)).to(self.device)
-        rewards = torch.clamp(rewards, -10, 10)
+        rewards = torch.clamp(rewards, -5, 5)
         
         # Convert to tensors and move to device
         states = torch.FloatTensor(states).to(self.device)
@@ -273,23 +276,23 @@ class PPOAgent:
             values = torch.FloatTensor(values).to(self.device)
             next_values = torch.FloatTensor(next_values).to(self.device)
             
-            # GAE Advantage calculation
+            # GAE with explicit lambda parameter
             advantages = torch.zeros_like(rewards)
             gae = 0
             for t in reversed(range(len(rewards))):
                 if t == len(rewards) - 1:
-                    next_value = next_values[t]
+                    next_value = next_values[t] * (1 - dones[t])
                 else:
                     next_value = values[t + 1]
                     
-                delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
-                gae = delta + self.gamma * 0.95 * (1 - dones[t]) * gae
+                delta = rewards[t] + self.gamma * next_value - values[t]
+                gae = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
                 advantages[t] = gae
             
             returns = advantages + values
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalize advantages with smaller epsilon
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
 
         # PPO update
         total_actor_loss = 0
