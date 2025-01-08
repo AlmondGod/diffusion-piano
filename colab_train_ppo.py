@@ -83,14 +83,12 @@ class PianoEnvWrapper(gym.Env):
             initial_buffer_time=0.0,
             disable_fingering_reward=False,
             disable_forearm_reward=False,
-            disable_colorization=True,  # Disable colorization
             disable_hand_collisions=False,
         )
         self.env = composer_utils.Environment(
             task=self.task,
             strip_singleton_obs_buffer_dim=True,
-            recompile_physics=True,
-            render_mode=None  # Disable rendering
+            recompile_physics=True
         )
         self.env = CanonicalSpecWrapper(self.env)
         
