@@ -191,13 +191,15 @@ if __name__ == "__main__":
     
     monitor_callback = ResourceMonitorCallback()
     
+    learning_rate = lambda remaining_progress: 3e-4 * remaining_progress
+
     # Initialize PPO with mixed precision training
     model = PPO(
         "MlpPolicy",
         vec_env,
-        learning_rate=3e-4,
-        n_steps=4096,
-        batch_size=512,
+        learning_rate=learning_rate,
+        n_steps=8196,
+        batch_size=1024,
         n_epochs=10,
         gamma=0.99,
         clip_range=0.2,
