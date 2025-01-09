@@ -91,12 +91,6 @@ class PianoEnvWrapper(gym.Env):
             strip_singleton_obs_buffer_dim=True,
             recompile_physics=True
         )
-        self.env = PianoSoundVideoWrapper(
-            self.env,
-            record_every=1,
-            camera_id="piano/back",
-            record_dir=".",
-        )
         self.env = CanonicalSpecWrapper(self.env)
         
         # Get specs from the environment

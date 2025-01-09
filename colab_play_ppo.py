@@ -8,6 +8,86 @@ import time
 
 from colab_train_ppo import PianoEnvWrapper
 from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
+from robopianist.wrappers import PianoSoundVideoWrapper
+from dm_env_wrappers import CanonicalSpecWrapper
+from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
+from mujoco_utils import composer_utils
+from gymnasium import spaces
+from typing import Dict
+
+class PianoEnvWrapper(gym.Env):
+    def __init__(self, midi_sequence):
+        super().__init__()
+        
+        self.task = PianoWithShadowHands(
+            midi=midi_sequence,
+            n_steps_lookahead=1,
+            trim_silence=True,
+            wrong_press_termination=False,
+            initial_buffer_time=0.0,
+            disable_fingering_reward=False,
+            disable_forearm_reward=False,
+            disable_hand_collisions=False,
+        )
+        self.env = composer_utils.Environment(
+            task=self.task,
+            strip_singleton_obs_buffer_dim=True,
+            recompile_physics=True
+        )
+        self.env = PianoSoundVideoWrapper(
+            self.env,
+            record_every=1,
+            camera_id="piano/back",
+            record_dir=".",
+        )
+        self.env = CanonicalSpecWrapper(self.env)
+        
+        # Get specs from the environment
+        obs_spec = self.env.observation_spec()
+        action_spec = self.env.action_spec()
+        
+        # Calculate observation space size
+        self.obs_dim = sum(np.prod(spec.shape) for spec in obs_spec.values())
+        
+        # Define action and observation spaces
+        self.action_space = spaces.Box(
+            low=action_spec.minimum,
+            high=action_spec.maximum,
+            shape=action_spec.shape,
+            dtype=np.float32
+        )
+        
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.obs_dim,),
+            dtype=np.float32
+        )
+
+    def _process_obs(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+        """Convert observation dict to flat array"""
+        return np.concatenate([
+            obs['goal'].flatten(),
+            obs['fingering'].flatten(),
+            obs['piano/state'].flatten(),
+            obs['piano/sustain_state'].flatten(),
+            obs['rh_shadow_hand/joints_pos'].flatten(),
+            obs['lh_shadow_hand/joints_pos'].flatten()
+        ])
+
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            super().reset(seed=seed)
+        timestep = self.env.reset()
+        return self._process_obs(timestep.observation), {}
+
+    def step(self, action):
+        timestep = self.env.step(action)
+        obs = self._process_obs(timestep.observation)
+        reward = timestep.reward if timestep.reward is not None else 0.0
+        terminated = timestep.last()
+        truncated = False
+        return obs, reward, terminated, truncated, {}
 
 def setup_inference():
     """Setup CUDA and PyTorch for inference"""
