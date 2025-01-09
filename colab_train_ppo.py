@@ -10,6 +10,7 @@ import os
 from dm_env_wrappers import CanonicalSpecWrapper
 from mujoco_utils import composer_utils
 from robopianist.suite.tasks.piano_with_shadow_hands import PianoWithShadowHands
+from robopianist.wrappers import PianoSoundVideoWrapper
 from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
 from pathlib import Path
 import argparse
@@ -90,6 +91,12 @@ class PianoEnvWrapper(gym.Env):
             strip_singleton_obs_buffer_dim=True,
             recompile_physics=True
         )
+        self.env = PianoSoundVideoWrapper(
+            self.env,
+            record_every=1,
+            camera_id="piano/back",
+            record_dir=".",
+        )
         self.env = CanonicalSpecWrapper(self.env)
         
         # Get specs from the environment
@@ -160,6 +167,11 @@ if __name__ == "__main__":
     parser.add_argument('--total_timesteps', type=int, default=2000000)
     parser.add_argument('--checkpoint_freq', type=int, default=10000)
     parser.add_argument('--eval_freq', type=int, default=20000)
+    # Add new arguments for resuming training
+    parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
+    parser.add_argument('--checkpoint_path', type=str, help='Path to checkpoint to resume from')
+    parser.add_argument('--reset_num_timesteps', action='store_true', 
+                       help='Reset timestep counter when resuming training')
     args = parser.parse_args()
 
     # Setup monitoring
@@ -193,29 +205,56 @@ if __name__ == "__main__":
     
     learning_rate = lambda remaining_progress: 3e-4 * remaining_progress
 
-    # Initialize PPO with mixed precision training
-    model = PPO(
-        "MlpPolicy",
-        vec_env,
-        learning_rate=learning_rate,
-        n_steps=8196,
-        batch_size=1024,
-        n_epochs=10,
-        gamma=0.99,
-        clip_range=0.2,
-        ent_coef=0.1,
-        verbose=1,
-        device='cuda',
-        policy_kwargs=dict(
-            net_arch=dict(
-                pi=[1024, 1024, 1024, 512, 512],
-                vf=[1024, 1024, 1024, 512, 512]
+    if args.resume:
+        print(f"Loading model from {args.checkpoint_path}")
+        # Load model with same hyperparameters
+        model = PPO.load(
+            args.checkpoint_path,
+            env=vec_env,
+            device='cuda',
+            custom_objects={
+                "learning_rate": learning_rate,
+                "lr_schedule": learning_rate,
+                "clip_range": lambda _: 0.2,
+                "n_steps": 16384,
+                "batch_size": 4096,
+                "n_epochs": 10,
+                "ent_coef": 0.1,
+                "policy_kwargs": dict(
+                    net_arch=dict(
+                        pi=[1024, 1024, 1024, 512, 512],
+                        vf=[1024, 1024, 1024, 512, 512]
+                    ),
+                    activation_fn=torch.nn.ReLU,
+                    normalize_images=False,
+                ),
+            }
+        )
+        print("Model loaded successfully")
+    else:
+        # Initialize new model
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=learning_rate,
+            n_steps=16384,
+            batch_size=2048,
+            n_epochs=10,
+            gamma=0.99,
+            clip_range=0.2,
+            ent_coef=0.1,
+            verbose=1,
+            device='cuda',
+            policy_kwargs=dict(
+                net_arch=dict(
+                    pi=[1024, 1024, 1024, 512, 512],
+                    vf=[1024, 1024, 1024, 512, 512]
+                ),
+                activation_fn=torch.nn.ReLU,
+                normalize_images=False,
             ),
-            activation_fn=torch.nn.ReLU,
-            normalize_images=False,
-        ),
-        tensorboard_log="./piano_tensorboard/"
-    )
+            tensorboard_log="./piano_tensorboard/"
+        )
 
     # Instead of manually converting to fp16, use torch.cuda.amp
     model.policy.optimizer = torch.optim.Adam(model.policy.parameters(), lr=3e-4)
@@ -229,6 +268,8 @@ if __name__ == "__main__":
         model.learn(
             total_timesteps=args.total_timesteps,
             callback=[checkpoint_callback, monitor_callback],
+            reset_num_timesteps=not args.resume or args.reset_num_timesteps,  # Only reset if not resuming or explicitly requested
+            tb_log_name=f"PPO_piano_{timestamp}"
         )
         
         # Save final model
