@@ -68,7 +68,7 @@ class VectorizedRecordingPianoEnv:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights_path", type=str, help="Path to the weights file", default="/Users/almondgod/Repositories/robopianist/checkpoints/20250107_175543/checkpoint_episode_2600.pt")
+    parser.add_argument("--weights_path", type=str, help="Path to the weights file", default="/Users/almondgod/Repositories/robopianist/checkpoints/20250107_175543/checkpoint_episode_3800.pt")
     args = parser.parse_args()
     
     # Load MIDI file
