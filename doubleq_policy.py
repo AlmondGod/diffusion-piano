@@ -73,8 +73,10 @@ class ActorNetwork(nn.Module):
         
         # Compute log probability
         log_prob = normal.log_prob(x_t)
+        # Sum before the squashing correction to match dimensions
+        log_prob = log_prob.sum(-1)
+        # Add squashing correction
         log_prob -= torch.sum(torch.log(1 - action.pow(2) + 1e-6), dim=-1)
-        log_prob = log_prob.sum(dim=-1)
         
         return action, log_prob
 
