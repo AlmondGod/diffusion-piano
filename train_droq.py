@@ -95,14 +95,14 @@ def main():
             tensorboard_log=log_dir,
             device=device,
             policy_kwargs=policy_kwargs,
-            verbose=0
+            verbose=1
         )
 
     try:
         model.learn(
             total_timesteps=args.total_timesteps,
             callback=[checkpoint_callback, monitor_callback, droq_callback],
-            log_interval=1000,
+            log_interval=10000,
             tb_log_name=f"DroQ_{timestamp}"
         )
         
