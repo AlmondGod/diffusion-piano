@@ -52,6 +52,32 @@ class CombinedCritic(nn.Module):
     def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.q1(torch.cat([obs, actions], dim=-1)), self.q2(torch.cat([obs, actions], dim=-1))
 
+class ActorNetwork(nn.Module):
+    def __init__(self, base_network):
+        super().__init__()
+        self.base_network = base_network
+        self.dtype = torch.float32
+        
+    def forward(self, obs):
+        return self.base_network(obs)
+    
+    def action_log_prob(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        obs = obs.to(dtype=self.dtype)
+        mean, log_std = self.base_network(obs).chunk(2, dim=-1)
+        log_std = torch.clamp(log_std, -20, 2)
+        
+        std = log_std.exp()
+        normal = torch.distributions.Normal(mean, std)
+        x_t = normal.rsample()
+        action = torch.tanh(x_t)
+        
+        # Compute log probability
+        log_prob = normal.log_prob(x_t)
+        log_prob -= torch.sum(torch.log(1 - action.pow(2) + 1e-6), dim=-1)
+        log_prob = log_prob.sum(dim=-1)
+        
+        return action, log_prob
+
 class DroQPolicy(BasePolicy):
     def __init__(
         self,
@@ -94,7 +120,8 @@ class DroQPolicy(BasePolicy):
         self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
 
         # Actor network (tanh-diagonal-Gaussian)
-        self.actor = LayerNormMLP(obs_dim, action_dim * 2, hidden_dims, dropout_rate).to(dtype=self.dtype)
+        base_network = LayerNormMLP(obs_dim, action_dim * 2, hidden_dims, dropout_rate).to(dtype=self.dtype)
+        self.actor = ActorNetwork(base_network)
         
         # Create optimizers and attach them to networks
         self.actor.optimizer = self.optimizer_class(
