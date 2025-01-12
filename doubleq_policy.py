@@ -96,6 +96,21 @@ class DroQPolicy(BasePolicy):
         # Actor network (tanh-diagonal-Gaussian)
         self.actor = LayerNormMLP(obs_dim, action_dim * 2, hidden_dims, dropout_rate).to(dtype=self.dtype)
         
+        # Create optimizers and attach them to networks
+        self.actor.optimizer = self.optimizer_class(
+            self.actor.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+        )
+        
+        # Create critic optimizer
+        self.critic = CombinedCritic(self.q1, self.q2)
+        self.critic.optimizer = self.optimizer_class(
+            list(self.q1.parameters()) + list(self.q2.parameters()),
+            lr=lr_schedule(1),
+            **self.optimizer_kwargs
+        )
+        
+        self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
+        
         # Automatic entropy tuning
         if target_entropy is None:
             self.target_entropy = -np.prod(action_space.shape).astype(np.float32)
@@ -105,25 +120,10 @@ class DroQPolicy(BasePolicy):
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device, dtype=self.dtype)
         self.alpha = self.log_alpha.exp()
         
-        # Optimizers
-        self.actor_optimizer = self.optimizer_class(
-            self.actor.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
-        )
-        self.q1_optimizer = self.optimizer_class(
-            self.q1.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
-        )
-        self.q2_optimizer = self.optimizer_class(
-            self.q2.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
-        )
-        self.alpha_optimizer = self.optimizer_class([self.log_alpha], lr=lr_schedule(1))
-        
         self.tau = tau
         self.gamma = gamma
         self.q_values = []
         self.policy_losses = []
-
-        self.critic = CombinedCritic(self.q1, self.q2)
-        self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
 
     def _predict(self, observation: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         # Ensure input is float32
