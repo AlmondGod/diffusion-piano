@@ -10,6 +10,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from doubleq_policy import DroQPolicy, CustomCallback
 from colab_train_ppo import PianoEnvWrapper, setup_monitoring, ResourceMonitorCallback
 
+from data_processing.add_fingering_to_midi import add_fingering_from_annotation_file
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_envs', type=int, default=8,
