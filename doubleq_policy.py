@@ -75,14 +75,16 @@ class DroQPolicy(BasePolicy):
             squash_output=True,
         )
         
+        # Ensure all tensors are float32
+        self.dtype = torch.float32
         obs_dim = observation_space.shape[0]
         action_dim = action_space.shape[0]
         
         # Q networks (double Q-learning)
-        self.q1 = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate)
-        self.q2 = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate)
-        self.q1_target = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate)
-        self.q2_target = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate)
+        self.q1 = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate).to(dtype=self.dtype)
+        self.q2 = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate).to(dtype=self.dtype)
+        self.q1_target = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate).to(dtype=self.dtype)
+        self.q2_target = LayerNormMLP(obs_dim + action_dim, 1, hidden_dims, dropout_rate).to(dtype=self.dtype)
         
         # Copy parameters to target networks
         self.q1_target.load_state_dict(self.q1.state_dict())
@@ -92,15 +94,15 @@ class DroQPolicy(BasePolicy):
         self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
 
         # Actor network (tanh-diagonal-Gaussian)
-        self.actor = LayerNormMLP(obs_dim, action_dim * 2, hidden_dims, dropout_rate)
+        self.actor = LayerNormMLP(obs_dim, action_dim * 2, hidden_dims, dropout_rate).to(dtype=self.dtype)
         
         # Automatic entropy tuning
         if target_entropy is None:
             self.target_entropy = -np.prod(action_space.shape).astype(np.float32)
         else:
-            self.target_entropy = target_entropy
+            self.target_entropy = float(target_entropy)
             
-        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device, dtype=self.dtype)
         self.alpha = self.log_alpha.exp()
         
         # Optimizers
@@ -124,8 +126,10 @@ class DroQPolicy(BasePolicy):
         self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
 
     def _predict(self, observation: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+        # Ensure input is float32
+        observation = observation.to(dtype=self.dtype)
         mean, log_std = self.actor(observation).chunk(2, dim=-1)
-        log_std = torch.clamp(log_std, -20, 2)  # As per original implementation
+        log_std = torch.clamp(log_std, -20, 2)
         
         if deterministic:
             return torch.tanh(mean)
