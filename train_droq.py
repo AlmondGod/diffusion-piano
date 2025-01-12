@@ -8,7 +8,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
 
 from doubleq_policy import DroQPolicy, CustomCallback
-from colab_train import PianoEnvWrapper, setup_monitoring, ResourceMonitorCallback
+from colab_train_ppo import PianoEnvWrapper, setup_monitoring, ResourceMonitorCallback
 
 def parse_args():
     parser = argparse.ArgumentParser()
