@@ -180,6 +180,25 @@ class DroQPolicy(BasePolicy):
         for param, target_param in zip(self.q2.parameters(), self.q2_target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
+    def action_log_prob(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Ensure input is float32
+        obs = obs.to(dtype=self.dtype)
+        mean, log_std = self.actor(obs).chunk(2, dim=-1)
+        log_std = torch.clamp(log_std, -20, 2)
+        
+        std = log_std.exp()
+        normal = torch.distributions.Normal(mean, std)
+        x_t = normal.rsample()
+        action = torch.tanh(x_t)
+        
+        # Compute log probability
+        log_prob = normal.log_prob(x_t)
+        # Account for tanh squashing
+        log_prob -= torch.sum(torch.log(1 - action.pow(2) + 1e-6), dim=-1)
+        log_prob = log_prob.sum(dim=-1)
+        
+        return action, log_prob
+
 class CustomCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
