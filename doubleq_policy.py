@@ -43,6 +43,15 @@ class LayerNormMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
+class CombinedCritic(nn.Module):
+    def __init__(self, q1, q2):
+        super().__init__()
+        self.q1 = q1
+        self.q2 = q2
+    
+    def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.q1(torch.cat([obs, actions], dim=-1)), self.q2(torch.cat([obs, actions], dim=-1))
+
 class DroQPolicy(BasePolicy):
     def __init__(
         self,
@@ -79,6 +88,9 @@ class DroQPolicy(BasePolicy):
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
         
+        self.critic = CombinedCritic(self.q1, self.q2)
+        self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
+
         # Actor network (tanh-diagonal-Gaussian)
         self.actor = LayerNormMLP(obs_dim, action_dim * 2, hidden_dims, dropout_rate)
         
@@ -107,6 +119,9 @@ class DroQPolicy(BasePolicy):
         self.gamma = gamma
         self.q_values = []
         self.policy_losses = []
+
+        self.critic = CombinedCritic(self.q1, self.q2)
+        self.critic_target = CombinedCritic(self.q1_target, self.q2_target)
 
     def _predict(self, observation: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
         mean, log_std = self.actor(observation).chunk(2, dim=-1)
