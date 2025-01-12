@@ -52,18 +52,17 @@ class DroQPolicy(BasePolicy):
         hidden_dims: List[int] = [256, 256, 256],
         dropout_rate: float = 0.01,
         target_entropy: float = None,
-        tau: float = 0.005,  # Target network update rate
+        tau: float = 0.005,
         gamma: float = 0.99,
         **kwargs
     ):
         super().__init__(
-            observation_space,
-            action_space,
-            device='auto',
+            observation_space=observation_space,
+            action_space=action_space,
             features_extractor_class=None,
             features_extractor_kwargs=None,
             optimizer_class=torch.optim.Adam,
-            optimizer_kwargs=dict(eps=1e-5, grad_clip_norm=0.5),
+            optimizer_kwargs=dict(eps=1e-5),
             squash_output=True,
         )
         
