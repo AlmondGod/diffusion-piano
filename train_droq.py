@@ -75,8 +75,7 @@ def main():
         model = SAC.load(
             args.checkpoint_path,
             env=vec_env,
-            device=device,
-            policy_kwargs=policy_kwargs,
+            device=device
         )
     else:
         model = SAC(
